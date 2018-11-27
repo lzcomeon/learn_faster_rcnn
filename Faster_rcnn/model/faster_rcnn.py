@@ -1,0 +1,225 @@
+import torch as t
+import numpy as np
+
+from torch import nn
+from utils.config import opt
+from datasets.dataset import preprocess
+from utils import array_tool as at
+
+
+
+
+class FasterRCNN(nn.Module):
+    """Base class for Faster R-CNN
+
+    This is a base class for Faster R-CNN links supporting object detection
+    API. The following three stages constitute Faster R-CNN
+
+    1. **Feature Extraction**: Images are taken and their \
+        feature maps are calcuted.
+    2. **Region Proposal Network**: Given the feature maps calcuted in \
+        the previous stage, produce set of ROIs around objects
+    3. **Localization and Classification Heads**: Using feature maps that \
+        belong to the proposed RoIs, classify the categories of the objects \
+        in the RoIs ad improve localizations
+
+    Each stage is carried out by one of the callable
+    :class:`torch.nn.Module` objects :obj:`feature`, :obj:`rpn` and :obj:`head`
+
+    There are two functions :method:`predict` and :method:`__call__` to conduct
+    object detection
+    :method:`predict` takes images and returns bounding boxes thar are converted
+     to image coordinates. This will be useful for a scenario when Faster R-CNN
+     is treated as a black box function, for instance
+     :method:`__call__` is provided for a scneraio when intermediate outputs
+     are needed, for instance, for training and debugging.
+
+    Args:
+        extractor (nn.Module): A module that takes a BCHW image array and returns
+            feature maps
+        rpn (nn.Module): A module that has the same interface as
+            :class:`model.region_proposal_network.RegionProposalNetwork`.
+            Please refer to the documentation found there.
+        head (nn.Module): A module that takes
+            a BCHW variable, RoIs and batch indices for RoIs. This returns class
+            dependent localization paramters and class scores.
+        loc_normalize_mean (tuple of four floats): Mean values of
+            localization estimates.
+        loc_normalize_std (tupler of four floats): Standard deviation
+            of localization estimates.
+    """
+
+    def __init__(self, extractor, rpn, head,
+                 loc_normalize_mean=(0., 0., 0., 0.),
+                 loc_normalize_std=(0.1, 0.1, 0.2, 0.2)
+    ):
+        super(FasterRCNN, self).__init__()
+        self.extractor = extractor
+        self.rpn = rpn
+        self.head = head
+
+        # mean and std
+        self.loc_normalize_mean = loc_normalize_mean
+        self.loc_normalize_std = loc_normalize_std
+        self.use_preset('evaluate')
+
+    @property
+    def n_class(self):
+        # Total number of classes including the background
+        return self.head.n_class
+
+    def forward(self, x, scale=1.):
+        """Forward Faster R-CNN
+
+        Scaling parameter `scale` is used by RPN to determine the
+        threshold to select small objects, which are going to rejected
+        irrespective of their confidence scores
+
+        Here are notations used
+        * :math:`N` is the number of batch size
+        * :math:`R'` is the total number of RoIs produced across batches. \
+        Given :math:`R_i` proposed RoIs from the :math:`i` th image, \
+        :math:`R' = \\sum _{i=1} ^ N R_i`.
+        * :math:`L` is the number of classes excluding the background.
+
+        Args:
+        x (autograd.Variable): 4D image variable.
+        scale (float): Amount of scaling applied to the raw image
+            during preprocessing.
+
+        Returns:
+        Variable, Variable, array, array:
+        Returns tuple of four values listed below.
+
+        * **roi_cls_locs**: Offsets and scalings for the proposed RoIs. \
+            Its shape is :math:`(R', (L + 1) \\times 4)`.
+        * **roi_scores**: Class predictions for the proposed RoIs. \
+            Its shape is :math:`(R', L + 1)`.
+        * **rois**: RoIs proposed by RPN. Its shape is \
+            :math:`(R', 4)`.
+        * **roi_indices**: Batch indices of RoIs. Its shape is \
+            :math:`(R',)`.
+
+
+        """
+        img_size = x.shape[2:]
+        h = self.extractor(x)
+        rpn_locx, rpn_scores, rois, roi_indices, anchor = \
+            self.rpn(h, img_size, scale)
+        roi_cls_locs, roi_scores = self.head(h, rois, roi_indices)
+
+        return roi_cls_locs, roi_scores, rois, roi_indices
+
+
+    def use_preset(self, preset):
+        """Use the given preset during prediction
+
+        This method changes values of :obj:`self.nms_thresh` and
+        :obj:`self.score_thresh`. These values are a threshold value
+        used for non maximum suppression and a threshold value
+        to discard low confidence proposals in :meth:`predict`,
+        respectively.
+
+        If the attributes need to be changed to something
+        other than the values provided in the presets, please modify
+        them by directly accessing the public attributes.
+
+        Args:
+            preset ({'visualize', 'evaluate'): A string to determine the
+                preset to use.
+
+        """
+        if preset == 'visualize':
+            self.nms_thresh = 0.3
+            self.score_thresh = 0.7
+        elif preset == 'evaluate':
+            self.nms_thresh = 0.3
+            self.score_thresh = 0.05
+        else:
+            raise ValueError('preset must be visualize or evaluate')
+
+    def _suppress(self, raw_cls_bbox, raw_prob):
+        bbox = list()
+        label = list()
+        score = list()
+        pass
+
+    def nograd(f):
+        def new_f(*args, **kwargs):
+            with t.no_grad():
+                return f(*args, **kwargs)
+        return new_f
+
+    @nograd
+    def predict(self, imgs, sizes=None, visualize=False):
+        """Detect objects from images
+
+        This method predicts objects for each image
+
+        Args:
+            imgs (iterable of numpy.ndarray): Arrays holding images.
+                All images are in CHW and RGB format
+                and the range of their value is :math:`[0, 255]`.
+
+        Returns:
+           tuple of lists:
+           This method returns a tuple of three lists,
+           :obj:`(bboxes, labels, scores)`.
+
+           * **bboxes**: A list of float arrays of shape :math:`(R, 4)`, \
+               where :math:`R` is the number of bounding boxes in a image. \
+               Each bouding box is organized by \
+               :math:`(y_{min}, x_{min}, y_{max}, x_{max})` \
+               in the second axis.
+           * **labels** : A list of integer arrays of shape :math:`(R,)`. \
+               Each value indicates the class of the bounding box. \
+               Values are in range :math:`[0, L - 1]`, where :math:`L` is the \
+               number of the foreground classes.
+           * **scores** : A list of float arrays of shape :math:`(R,)`. \
+               Each value indicates how confident the prediction is.
+        """
+
+        self.eval()
+        if visualize:
+            self.use_preset('visualize')
+            prepared_imgs = list()
+            sizes = list()
+            for img in imgs:
+                size = img.shape[1:]  # [H, W], img.shape: [C, H, W]
+                img = preprocess(at.tonumpy(img))
+                prepared_imgs.append(img)
+                sizes.append(size)
+        else:
+            prepared_imgs = imgs
+        bboxes = list()
+        labels = list()
+        scores = list()
+
+        for img, size in zip(prepared_imgs, sizes):
+            img = at.totensor(img[None]).float()
+            # img[None] add a new axis shape: [C, H, W] -> [1, C, H, W]
+
+            scale = img.shape[3] / size[1]  # new_W / ori_W
+
+            roi_cls_loc, roi_scores, rois, _ = self(img, scale)
+            # assuming that batch size is 1
+            roi_score = roi_scores.data
+            roi_cls_loc = roi_cls_loc.data
+            roi = at.totensor(rois) / scale
+
+            # Convert predictions to bounding boxes in image coordinates.
+            # Bounding boxes are scaled to the scale of the input images.
+            mean = t.Tensor(self.loc_normalize_mean).cuda().repeat(self.n_class)[None]
+            std = t.Tensor(self.loc_normalize_std).cuda().repeat(self.n_class)[None]
+
+
+            roi_cls_loc = (roi_cls_loc * std + mean)
+            roi_cls_loc = roi_cls_loc.view(-1, self.n_class, 4)
+            roi = roi.view(-1, 1, 4).expand_as(roi_cls_loc)
+            pass
+
+
+
+
+
+
