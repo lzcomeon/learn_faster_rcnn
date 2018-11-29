@@ -1,12 +1,23 @@
 import torch as t
 import numpy as np
+import cupy as cp
+
+from model.utils.bbox_tool import loc2bbox
+from model.utils.nms import non_maximum_suppression
 
 from torch import nn
+from torch.nn import functional as F
 from utils.config import opt
 from datasets.dataset import preprocess
 from utils import array_tool as at
 
 
+def nograd(f):
+    def new_f(*args, **kwargs):
+        with t.no_grad():
+            return f(*args, **kwargs)
+
+    return new_f
 
 
 class FasterRCNN(nn.Module):
@@ -62,6 +73,8 @@ class FasterRCNN(nn.Module):
         self.loc_normalize_mean = loc_normalize_mean
         self.loc_normalize_std = loc_normalize_std
         self.use_preset('evaluate')
+        print('----------------继承父类---------------')
+        # print(self.n_class)
 
     @property
     def n_class(self):
@@ -102,6 +115,8 @@ class FasterRCNN(nn.Module):
 
 
         """
+        print('----------------debug in faster rcnn----------------')
+        print(self.n_class)
         img_size = x.shape[2:]
         h = self.extractor(x)
         rpn_locx, rpn_scores, rois, roi_indices, anchor = \
@@ -142,13 +157,29 @@ class FasterRCNN(nn.Module):
         bbox = list()
         label = list()
         score = list()
-        pass
 
-    def nograd(f):
-        def new_f(*args, **kwargs):
-            with t.no_grad():
-                return f(*args, **kwargs)
-        return new_f
+        # skip cls_id=0, because it is the background
+        for l in range(1, self.n_class):
+            cls_bbox_l = raw_cls_bbox.reshape((-1, self.n_class, 4))[:, l, :]
+            prob_l = raw_prob[:, l]
+            mask = prob_l > self.score_thresh
+            cls_bbox_l = cls_bbox_l[mask]
+            prob_l = prob_l[mask]
+            keep = non_maximum_suppression(cp.array(cls_bbox_l), self.nms_thresh, prob_l)
+            keep = cp.asnumpy(keep)
+            bbox.append(cls_bbox_l[keep])
+            # The labels are in [0, self.n_class-2]
+            label.append((l - 1) * np.ones((len(keep),)))
+            score.append(prob_l[keep])
+
+        bbox = np.concatenate(bbox, axis=0).astype(np.float32)
+        label = np.concatenate(label, axis=0).astype(np.int32)
+        score = np.concatenate(score, acis=0).astype(np.float32)
+
+        return bbox, label, score
+
+
+
 
     @nograd
     def predict(self, imgs, sizes=None, visualize=False):
@@ -201,7 +232,7 @@ class FasterRCNN(nn.Module):
 
             scale = img.shape[3] / size[1]  # new_W / ori_W
 
-            roi_cls_loc, roi_scores, rois, _ = self(img, scale)
+            roi_cls_loc, roi_scores, rois, _ = self(img, scale)  # 这里自己调用__call__
             # assuming that batch size is 1
             roi_score = roi_scores.data
             roi_cls_loc = roi_cls_loc.data
@@ -216,7 +247,56 @@ class FasterRCNN(nn.Module):
             roi_cls_loc = (roi_cls_loc * std + mean)
             roi_cls_loc = roi_cls_loc.view(-1, self.n_class, 4)
             roi = roi.view(-1, 1, 4).expand_as(roi_cls_loc)
-            pass
+
+            cls_bbox = loc2bbox(at.tonumpy(roi).reshape((-1, 4)),
+                                at.tonumpy(roi_cls_loc).reshape((-1, 4)))
+            cls_bbox = at.totensor(cls_bbox)
+            cls_bbox = cls_bbox.view(-1, self.n_class * 4)
+
+            # clip bounding box
+            cls_bbox[:, 0::2] = (cls_bbox[:, 0::2].clamp(min=0, max=size[0]))
+            cls_bbox[:, 1::2] = (cls_bbox[:, 1::2].clamp(min=0, max=size[1]))
+
+            prob = at.tonumpy(F.softmax(at.totensor(roi_score), dim=1))
+
+            raw_cls_bbox = at.tonumpy(cls_bbox)
+            raw_prob = at.tonumpy(prob)
+            bbox, label, score = self._suppress(raw_cls_bbox, raw_prob)
+            bboxes.append(bbox)
+            labels.append(label)
+            score.append(score)
+
+        self.use_preset('evaluate')
+        self.train()
+        return bboxes, labels, scores
+
+    def get_optimizer(self):
+        """
+        return optimizer, It could be overwriten if you want to specify
+        special optimizer.
+        """
+
+        lr = opt.lr
+        params = []
+        for key, value in dict(self.named_parameters()).items():
+            if value.requires_grad:
+                if 'bias' in key:
+                    params += [{'params': [value], 'lr': lr * 2, 'weight_decay': 0}]
+                else:
+                    params += [{'params': [value], 'lr': lr, 'weight_decay': opt.weight_decay}]
+        if opt.use_adam:
+            self.optimizer = t.optim.Adam(params)
+        else:
+            self.optimizer = t.optim.SGD(params, momentum=0.9)
+        return self.optimizer
+
+    def scale_lr(self, decay=0.1):
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] *= decay
+        return self.optimizer
+
+
+
 
 
 

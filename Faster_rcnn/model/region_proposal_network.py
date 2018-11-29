@@ -87,13 +87,15 @@ class RegionProposalNetwork(nn.Module):
         n, _, hh, ww = x.shape
         anchor = _enumerate_shifted_anchor(np.array(self.anchor_base),
                                            self.feat_stride, hh, ww)
-        n_anchor = anchor[0] // (hh * ww)
+        n_anchor = anchor.shape[0] // (hh * ww)
         h = F.relu(self.conv1(x))
 
         rpn_locs = self.loc(h)
         rpn_locs = rpn_locs.permute(0, 2, 3, 1).contiguous().view(n, -1, 4)
         rpn_scores = self.score(h)
         rpn_scores = rpn_scores.permute(0, 2, 3, 1).contiguous()
+        # print('----------------debug-----------------')
+        # print((n, hh, ww, n_anchor))
         rpn_softmax_scores = F.softmax(rpn_scores.view(n, hh, ww, n_anchor, 2), dim=4)
         rpn_fg_scores = rpn_softmax_scores[:, :, :, :, 1].contiguous()
         rpn_fg_scores = rpn_fg_scores.view(n, -1)

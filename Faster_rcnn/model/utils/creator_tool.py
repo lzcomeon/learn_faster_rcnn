@@ -69,7 +69,7 @@ class AnchorTargetCreator(object):
         n_anchor = len(anchor)
         inside_index = _get_inside_index(anchor, img_H, img_W)  # W
         anchor = anchor[inside_index]
-        argmax_ious, label = self.create_label(
+        argmax_ious, label = self._create_label(
             inside_index, anchor, bbox)
 
         # computing bounding box regression targets
@@ -110,7 +110,7 @@ class AnchorTargetCreator(object):
         n_neg = self.n_sample - np.sum(label==1)  # 负样本数目
         neg_index = np.where(label == 0)[0]
         if len(neg_index) > n_neg:
-            disable_index = np.random_choice(
+            disable_index = np.random.choice(
                 neg_index, size=(len(neg_index) - n_neg), replace=False)
             label[disable_index] = -1
         return argmax_ious, label
@@ -246,11 +246,14 @@ class ProposalCreator(object):
             n_post_nms = self.n_test_post_nms
 
         # Convert anchors into proposal via bbox transformation
+        # print(anchor.shape, loc.shape)
         roi = loc2bbox(anchor, loc)
 
         # Clip predicted bpxes to image.
+        # print('---------------debug--------------')
+        # print(img_size)
         roi[:, slice(0, 4, 2)] = np.clip(
-            roi[:, slice(0,4,2)], 0, img_size[0])
+            roi[:, slice(0, 4, 2)], 0, img_size[0])
         roi[:, slice(1, 4, 2)] = np.clip(
             roi[:, slice(1, 4, 2)], 0, img_size[1])
 
@@ -283,7 +286,7 @@ class ProposalCreator(object):
         return roi
 
 
-class ProposalTaegetCreator(object):
+class ProposalTargetCreator(object):
     """Assign ground truth bounding boxes to given RoIs
 
 

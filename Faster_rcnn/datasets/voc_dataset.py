@@ -21,6 +21,7 @@ class VOCBboxDataset(object):
     def __init__(self, data_dir, split='trainval', use_difficult=False,
                  return_difficult=False,
                  ):
+
         id_list_file = os.path.join(data_dir, 'ImageSets/Main/{0}.txt'.format(split))
         self.ids = [id_.strip() for id_ in open(id_list_file)]
 

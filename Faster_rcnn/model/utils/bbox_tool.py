@@ -61,7 +61,7 @@ def loc2bbox(src_bbox, loc):
     dst_bbox[:, 2::4] = ctr_y + 0.5 * h
     dst_bbox[:, 3::4] = ctr_x + 0.5 * w
 
-    pass
+    return dst_bbox
 
 def bbox2loc(src_bbox, dst_bbox):
     """Encodes the source and the destination bounding boxes to 'loc'
@@ -145,10 +145,14 @@ def bbox_iou(bbox_a, bbox_b):
     br = np.minimum(bbox_a[:, None, 2:], bbox_b[:, 2:])
 
     area_i = np.prod(br - tl, axis=2) * (tl < br).all(axis=2)
-    area_a = np.prob(bbox_a[:, 2:] - bbox_a[:, :2], axis=1)
+    area_a = np.prod(bbox_a[:, 2:] - bbox_a[:, :2], axis=1)
     area_b = np.prod(bbox_b[:, 2:] - bbox_b[:, :2], axis=1)
+    #
+    # print('---------------debug--------------')
+    #
+    # print(tl.shape, br.shape, area_i.shape, area_a.shape, area_b.shape)
 
-    return area_i / (area_a + area_b - area_i)
+    return area_i / (area_a[:, None] + area_b - area_i)
 
 
 def generate_anchor_base(base_size=16, ratios=[0.5, 1, 2], anchor_scales=[8, 16, 32]):
